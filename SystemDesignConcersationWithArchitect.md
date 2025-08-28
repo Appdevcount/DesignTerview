@@ -592,3 +592,563 @@ SE: And it’s pragmatic: adapters at the edges, a consistent domain model, auto
 
 SA: Great. Let’s turn this into tickets and wireframes next.
 
+
+
+Conversational System Design — Healthcare Prior Authorization (End‑to‑End, Azure‑Native)
+
+> Format: A back‑and‑forth between a Senior Architect (SA) and a Senior Engineer (SE). We go from ideation → requirements → HLD → LLD → security → scaling → observability → data → APIs → events → deployment → testing → ADRs. Code snippets use C# (.NET). Standards: FHIR R4, X12 278/275, HIPAA. Cloud stack: Microsoft Azure.
+
+
+
+
+---
+
+0) Elevator Pitch
+
+SA: Let’s build a Prior Authorization (PA) Platform for a payer that receives PA requests from providers, validates eligibility, applies policy rules, facilitates clinical review, and responds with determinations. We’ll integrate with EHRs via FHIR and clearinghouses via X12 278. Core tenets: compliance, automation, transparency, resilience, and Azure‑native architecture.
+
+SE: We’ll leverage Azure API Management, AKS, Functions, Service Bus, Event Hubs, App Services, Azure SQL/Cosmos DB, Blob Storage, Key Vault, and Azure Monitor. Target: < 5 min decisioning for auto‑approved cases, and 99.9% availability.
+
+
+---
+
+1) Ideation & Problem Framing
+
+SA: What problem are we solving?
+
+SE: Providers face delays submitting PAs across multiple proprietary portals. Payers struggle with inconsistent data and manual reviews. We want a single, standards‑based entry point, automated checks, and auditable decisions—all running on Azure for scalability and compliance.
+
+SA: Who are our stakeholders?
+
+SE:
+
+Providers (EHR systems) → submit via FHIR APIs (APIM + AKS)
+
+Clearinghouses → X12 278 via Azure B2B Gateway or Logic Apps
+
+Payer UM reviewers → Reviewer UI hosted on Azure App Service
+
+Members → status tracking via Azure API + Notifications
+
+Payer back‑office → Eligibility/Benefits (legacy SOAP bridged with Logic Apps)
+
+Compliance/Security → Azure Security Center + Key Vault
+
+
+
+---
+
+2) Scope & Assumptions
+
+SA: MVP scope?
+
+SE:
+
+Inbound channels: FHIR API via APIM, X12 278 via Logic Apps + Integration Account, and Provider Portal (App Service).
+
+Outbound: FHIR Communication APIs, X12 278 responses, Azure Communication Services (SMS/Email).
+
+Attachments: FHIR DocumentReference, X12 275, stored in Blob Storage with AV scanning (Defender for Storage).
+
+Rules: hosted in Azure Functions with versioned policies in Cosmos DB.
+
+
+SA: Constraints?
+
+SE: HIPAA compliance, BAA signed, multi‑region DR, encryption with Key Vault‑backed keys.
+
+
+---
+
+3) Non‑Functional Requirements (Azure Mapping)
+
+Security: OAuth2/OIDC via Azure AD B2C (providers) and Azure AD (internal).
+
+Performance: Ingestion via APIM with caching; async processing via Service Bus.
+
+Reliability: Geo‑replicated SQL/Cosmos, ZRS Blob Storage; DLQs in Service Bus.
+
+Observability: Azure Monitor, App Insights, Log Analytics, Azure Sentinel.
+
+Compliance: HIPAA, PHI masked in logs, immutable Blob WORM.
+
+
+
+---
+
+4) Target Product Capabilities
+
+MVP: Intake (FHIR/X12/Portal), eligibility, benefits, rules, reviewer UI, determination, notifications, audit.
+
+v2: ML triage (Azure ML), guideline service integration, appeal workflow, Power BI dashboards, Cosmos DB analytical store.
+
+
+---
+
+5) High‑Level Architecture (HLA)
+
+SA: Azure architecture sketch?
+
+SE:
+
+Providers/EHR ----> Azure API Management ----> AKS (FHIR Intake, Validation, Orchestrator)
+Clearinghouse ---> Logic Apps + Integration Account (X12 278/275) ---> Service Bus (normalized events)
+Provider Portal -> App Service (React/Blazor) ----> APIs (AKS)
+
+                  +------------------------------------+
+                  | Azure Service Bus (Pub/Sub + DLQ)  |
+                  +------------------------------------+
+                           |        |          |   
+                           v        v          v   
+             Azure Function (Rules)  Azure App Service (Reviewer UI) 
+                           |        v
+                           v   Azure SQL / Cosmos DB
+                     Determination Svc in AKS
+                           |
+                           v
+                Azure Event Hub --> Analytics / Power BI
+
+Documents -> Blob Storage (immutable, AV scan)
+Audit Logs -> Azure Data Lake + Sentinel
+Notifications -> Azure Communication Services
+
+
+---
+
+6) Core Domain & Contexts (Azure Deployment)
+
+Intake (AKS Pods): FHIR & X12 adapters, validation, dedupe.
+
+Eligibility/Benefits: Logic Apps + SOAP wrappers; results cached in Redis (Azure Cache for Redis).
+
+Rules Engine: Azure Functions + Cosmos DB policy store.
+
+Clinical Review: Reviewer UI (App Service), queue from Service Bus.
+
+Decisioning: Stateful orchestrator in AKS.
+
+Docs: Blob Storage + Event Grid for processing.
+
+Audit/Compliance: Data Lake Gen2 + immutable storage.
+
+
+
+---
+
+7) Events (Service Bus + Event Grid)
+
+pa.submitted.v1 (Service Bus Topic)
+
+eligibility.checked.v1
+
+benefits.evaluated.v1
+
+rules.evaluated.v1
+
+document.attached.v1 (Event Grid triggers re‑evaluation)
+
+review.completed.v1
+
+pa.determined.v1
+
+pa.status.changed.v1
+
+
+SA: Why Service Bus vs Event Hub?
+
+SE: Service Bus for transactional workflows (DLQ, sessions). Event Hub for telemetry/analytics (to Data Lake/Power BI).
+
+
+---
+
+8) Security (Azure Services)
+
+AuthN: Azure AD B2C (providers), Azure AD (internal staff).
+
+AuthZ: OPA sidecar in AKS pods; Rego policies in GitHub + deployed via Azure DevOps.
+
+Data Protection: Always Encrypted (SQL), TDE, Blob SSE with CMK in Key Vault.
+
+Secrets: Managed identities + Key Vault.
+
+Audit: Diagnostic logs shipped to Azure Sentinel.
+
+
+
+---
+
+9) Reliability Patterns (Azure)
+
+Service Bus DLQ + Logic App remediation flows.
+
+Event Grid retries with exponential backoff.
+
+Azure Traffic Manager for multi‑region failover.
+
+AKS Horizontal Pod Autoscaler (HPA) based on RPS.
+
+Cosmos DB multi‑region write.
+
+
+
+---
+
+10) Observability (Azure)
+
+Tracing: App Insights distributed tracing.
+
+Metrics: APIM metrics, Service Bus queue depth, Cosmos RU usage.
+
+Logging: App Insights + Log Analytics workspace.
+
+Alerts: Azure Monitor action groups.
+
+
+
+---
+
+11) Deployment Strategy
+
+IaC: Bicep/ARM or Terraform.
+
+CI/CD: Azure DevOps Pipelines → AKS, Functions, Logic Apps.
+
+Blue/Green: via AKS Ingress + Traffic Split.
+
+Secrets: Managed Identities; Key Vault integration in AKS.
+
+DR: Active‑passive with geo‑replication (SQL, Cosmos, Blob).
+
+
+
+---
+
+12) Example ADRs (Azure Specific)
+
+ADR‑001: Event Bus — Azure Service Bus vs Event Hub
+
+Decision: Service Bus for workflows, Event Hub for analytics.
+
+
+ADR‑002: Database — SQL vs Cosmos DB
+
+Decision: SQL for strong consistency (eligibility, determinations), Cosmos DB for rules, document metadata, and flexible querying.
+
+
+ADR‑003: API Management
+
+Decision: Use APIM as unified entry point (FHIR APIs, OAuth2, rate limiting, CORS).
+
+
+ADR‑004: Secrets Management
+
+Decision: All secrets in Azure Key Vault, rotated by policy.
+
+
+ADR‑005: Observability
+
+Decision: Azure Monitor + App Insights as standard telemetry stack.
+
+
+
+---
+
+13) Epilogue
+
+SA: This Azure‑native architecture leverages managed services for reliability and compliance while giving us flexibility with AKS for domain services.
+
+SE: Exactly—cloud‑native where possible (Functions, Logic Apps, Service Bus), custom where domain complexity requires (AKS orchestration, reviewer UI). It’s scalable, secure, and future‑proof.
+
+SA: Let’s align with security and compliance teams, then start PoCing intake and orchestration in AKS.
+
+
+---
+
+25) Azure‑Native Architecture Mapping & Enhancements
+
+> This augments every major decision with Azure services, deployment topology, policies, and actionable snippets.
+
+
+
+25.1 Azure Service Mapping (By Capability)
+
+API Ingress & Governance: Azure API Management (APIM) (external + internal), Front Door (WAF) for global routing & WAF, App Gateway (WAF) for regional L7 + mTLS to AKS/ACA.
+
+B2B EDI/X12/AS2: Logic Apps (Standard) with Integration Account (schemas/maps), AS2/EDI connectors; private endpoints to storage & Key Vault.
+
+Compute (Microservices): AKS (mission‑critical, sidecars like OPA/Envoy) or Azure Container Apps (ACA) (serverless scale, Dapr for pub/sub & bindings). Reviewer UI on App Service or ACA.
+
+Events & Messaging: Azure Service Bus (ASB) (queues, topics, sessions, DLQ) for commands/workflows; Event Hubs (Kafka‑compatible) for streaming/analytics; optional Storage Queues for simple fan‑out.
+
+Data Stores: Azure SQL (OLTP, strong relational), Cosmos DB (SQL API) for high‑scale JSON (FHIR bundles, projections), Azure Blob Storage with Immutable (WORM) legal hold for docs/audit, Azure Files only if SMB is required.
+
+Caching: Azure Cache for Redis (Enterprise) for token, eligibility memoization, and rate‑limit counters.
+
+Search: Azure AI Search for PA lookups with role‑aware indexers.
+
+Security & Secrets: Entra ID (Azure AD) (OIDC/OAuth2), Managed Identities, Key Vault (HSM‑backed keys), Defender for Cloud for posture.
+
+Observability: Application Insights (traces, metrics), Log Analytics (central logs), Azure Monitor Alerts, Workbooks for SLOs.
+
+Data & Analytics: Azure Data Lake Storage Gen2 → Synapse/Microsoft Fabric for warehouse & BI; PHI governance via Purview.
+
+
+25.2 Azure Reference Topology (Hub‑Spoke with Private Endpoints)
+
+Internet/Partners
+   │
+   ├── Azure Front Door (WAF) ──► APIM (External)
+   │                               │
+   │                               ├── Public products (FHIR intake, Status)
+   │                               └── B2B route ► Logic Apps (AS2/X12) via VNet PE
+   │
+   └── Partner VPN/ExpressRoute ► Hub VNet (Firewall, Bastion)
+                                   │
+                                   └─► Spoke VNet(s):
+                                         - AKS/ACA Subnet (private)
+                                         - APIM Internal Subnet (for internal APIs)
+                                         - Data Subnet: SQL/Cosmos/Redis via Private Endpoints
+                                         - Integration Subnet: Service Bus/Event Hubs
+
+Private Link/Endpoints for SQL, Cosmos, Storage, Service Bus, Event Hubs, Key Vault.
+
+NSGs + Azure Firewall with FQDN tags; Private DNS Zones for PEs.
+
+
+25.3 Identity, Access & API Policies (APIM)
+
+Auth: Entra ID for OAuth2; Client‑credential flow for system‑to‑system; SMART‑on‑FHIR profile for EHR apps.
+
+mTLS: APIM policies to require client cert for B2B; certs stored in Key Vault; rotate via automation.
+
+Rate Limiting/Quota: per‑tenant products; spike arrest; retry‑after headers.
+
+Idempotency: enforce Idempotency-Key header and cache handshake with Redis.
+
+CORS: allow least‑privilege origins; dynamic origin lists via APIM named values.
+
+
+APIM Sample Policy (extract):
+
+<policies>
+  <inbound>
+    <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
+      <openid-config url="https://login.microsoftonline.com/<tenant>/v2.0/.well-known/openid-configuration" />
+      <required-claims>
+        <claim name="aud">
+          <value>api://prior-auth</value>
+        </claim>
+      </required-claims>
+    </validate-jwt>
+    <check-header name="Idempotency-Key" failed-check-httpcode="400"/>
+    <rate-limit calls="100" renewal-period="60" />
+    <set-header name="x-trace-id" exists-action="override">
+      <value>@(context.Variables.GetValueOrDefault("request-id"))</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <forward-request />
+  </backend>
+  <outbound>
+    <set-header name="Strict-Transport-Security" exists-action="override">
+      <value>max-age=31536000</value>
+    </set-header>
+  </outbound>
+</policies>
+
+25.4 Orchestration on Azure
+
+Saga/Workflow: Keep orchestration in code within AKS/ACA (e.g., MassTransit + ASB sessions) for portability; optionally use Logic Apps for partner‑facing EDI orchestrations and human approvals (non‑PHI where possible).
+
+Rules Engine: Host rules svc in AKS/ACA, rules in Blob (versioned) or Cosmos; hot‑reload; protect with mTLS + APIM.
+
+
+25.5 Storage Decisions (ADR‑Expanded)
+
+ADR‑004A: Use Azure SQL for PA core (ACID + relational joins, auditing). Store FHIR bundle snapshots in Cosmos DB (JSONB‑like) or as Blob with hash; reference by PAId.
+
+ADR‑004B: Blob Storage with immutable policies and legal holds for clinical docs & audit (meets retention).
+
+
+25.6 Messaging Design on Azure
+
+Commands/Work queues: Service Bus queues with sessions for PAId ordering; DLQs monitored by runbooks.
+
+Domain events: Service Bus Topics for internal fan‑out; Event Grid for external webhooks (low PHI) with validation handshake.
+
+Stream analytics: emit de‑identified events to Event Hubs → Stream Analytics/Synapse.
+
+
+25.7 Observability & Audit (Azure Monitor Stack)
+
+App Insights: Distributed tracing across APIM, AKS/ACA, Logic Apps.
+
+Log Analytics: Central workspace; diagnostic settings on Service Bus, SQL, Storage, Key Vault.
+
+Dashboards/Workbooks: SLOs—intake p95, auto‑approval %, DLQ depth, reviewer SLA.
+
+Audit: Write decision/audit events to Blob (WORM) and Event Hubs (for immutable ledgering in DW). Consider Azure Confidential Ledger for tamper‑evident metadata.
+
+
+25.8 Security Posture
+
+Defender for Cloud policies + regulatory compliance (HIPAA/HITRUST blueprints).
+
+Azure Policy to enforce private endpoints, TLS1.2+, approved SKUs, geo restrictions.
+
+Key Vault + Managed HSM for signing (e.g., X12, JWT), CMKs for SQL TDE & Storage.
+
+Confidential Computing (optional) for sensitive rules eval using CCI/SEV‑SNP on AKS node pools.
+
+
+25.9 Deployment & CI/CD
+
+IaC: Bicep or Terraform for all resources; separate stacks per environment; PR‑driven.
+
+Pipelines: GitHub Actions or Azure DevOps; container builds → image scan → deploy to AKS/ACA with blue/green; APIM revisions + auto‑tests.
+
+
+Bicep (excerpt):
+
+resource sb 'Microsoft.ServiceBus/namespaces@2022-10-01' = {
+  name: '${prefix}-sb'
+  location: location
+  sku: { name: 'Premium' }
+}
+resource topic 'Microsoft.ServiceBus/namespaces/topics@2022-10-01' = {
+  name: '${sb.name}/pa-events'
+  properties: { enableBatchedOperations: true }
+}
+
+GitHub Actions (deploy ACA excerpt):
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with: { creds: ${{ secrets.AZURE_CREDENTIALS }} }
+      - uses: azure/container-apps-deploy-action@v2
+        with:
+          resourceGroup: rg-priorauth-prod
+          name: pa-intake
+          imageToDeploy: ghcr.io/org/pa-intake:${{ github.sha }}
+          ingress: internal
+          envVars: |
+            SERVICEBUS_CONN=${{ secrets.SB_CONN }}
+            KEYVAULT_URI=${{ vars.KV_URI }}
+
+25.10 Enhanced Failure Handling on Azure
+
+Resilience: Polly policies; Service Bus auto‑forward to DLQ on poison; Scheduled retries using SB scheduled messages.
+
+Chaos: Azure Chaos Studio to inject dependency faults; verify p95 and SLA compliance.
+
+Scale: AKS HPA on CPU/RPS/queue length; ACA KEDA scale rules on Service Bus.
+
+
+25.11 Cost & Ops Guardrails
+
+Premium SKUs only where needed (APIM, Service Bus) in prod; dev/test on Standard.
+
+Autoscale floors/ceilings; stop non‑prod overnight.
+
+Centralize logs to a single Log Analytics workspace with retention policies (e.g., 30–90 days hot, archive beyond).
+
+
+25.12 Concrete Flow with Azure Components
+
+1. Front Door (WAF) receives FHIR submission → routes to APIM (external).
+
+
+2. APIM enforces JWT + idempotency, forwards to AKS/ACA Intake over private network.
+
+
+3. Intake writes PA to Azure SQL, snapshots bundle to Cosmos/Blob, emits pa.submitted.v1 to Service Bus.
+
+
+4. Orchestrator consumes; calls Eligibility/Benefits (legacy via Private Endpoint/APIM internal); caches in Redis.
+
+
+5. Rules Service evaluates; if auto‑approve, write Determination and publish events; else enqueue to Clinical Review.
+
+
+6. Reviewer UI (App Service/ACA) pulls work via Service Bus; docs come from Blob (SAS, limited scope, malware‑scanned).
+
+
+7. Status Service projects state to Cosmos for fast reads; APIM exposes /status; for B2B, Logic Apps sends X12 278 response.
+
+
+8. Notifications via Event Grid + Functions/Communication Services; Audit to Blob (WORM).
+
+
+
+25.13 Azure‑Specific ADRs
+
+ADR‑006: AKS vs ACA — Decision: Start with ACA for simpler ops and event‑driven scale; move hot paths to AKS if sidecars/custom mesh needed. Consequence: Two runtimes, but faster MVP.
+
+ADR‑007: Service Bus vs Event Hubs for domain events — Decision: Service Bus Topics for internal domain events (ordering, sessions); Event Hubs only for analytics/telemetry. Consequence: Clear separation; avoid mixing.
+
+ADR‑008: APIM Front Door vs App Gateway — Decision: Front Door for global routing + WAF; App Gateway (private) for regional L7 to AKS. Consequence: Dual layers; improved resilience.
+
+ADR‑009: SQL vs Cosmos — Decision: SQL for PA core transactions; Cosmos for read models/status projections. Consequence: Polyglot persistence; ETL complexity mitigated with change feed.
+
+
+
+---
+
+26) What to Implement Next (Azure‑Ready Backlog)
+
+1. APIM products/policies (JWT, mTLS, rate limits, CORS, idempotency)
+
+
+2. ACA environment + PA Intake/Orchestrator services with KEDA (Service Bus scaler)
+
+
+3. Service Bus namespace (Premium), queues/topics, topic subscriptions per BC
+
+
+4. Azure SQL + Cosmos + Blob (WORM) with Private Endpoints & CMKs
+
+
+5. Logic Apps (AS2/X12) + Integration Account; X12 278/275 schemas & maps
+
+
+6. App Insights + central Log Analytics, DCRs for diagnostics across resources
+
+
+7. GitHub Actions pipelines + Bicep for baseline platform
+
+
+8. Defender policy set + Azure Policy (PE required, TLS1.2+, private DNS)
+
+
+
+
+---
+
+27) Conversation — Azure Enhancements (Selected Excerpts)
+
+SA: For MVP, ACA or AKS?
+
+SE: ACA gets us faster with built‑in Dapr and KEDA‑style scaling on Service Bus. If we need OPA sidecars, service mesh, or node‑level confidential compute, we’ll carve out AKS for those workloads per ADR‑006.
+
+SA: How do we keep PHI off the wire?
+
+SE: Private endpoints for all data planes, APIM internal for east‑west traffic, Front Door only for public north‑south. Logs scrubbed via Diagnostic Settings → Log Analytics with data collection rules; blobs set to WORM with legal holds.
+
+SA: X12 partners can be… quirky. What’s our plan?
+
+SE: Terminate AS2 at Logic Apps (Standard) with Integration Account; use maps to our canonical model. We’ll version MAPs/SCHEMAs in source control and promote via IaC.
+
+SA: What if eligibility is slow?
+
+SE: Circuit breaker + cache results in Redis with a short TTL; on repeated failure, pend with a “system unavailable” reason and alert SREs via Azure Monitor.
+
+SA: How do we expose status to providers securely?
+
+SE: APIM product with per‑client quotas, fine‑grained scopes; Status Service projects to Cosmos for low‑latency GETs. For webhooks, we use Event Grid + validation, and store only de‑identified payloads.
+
+SA: Good. Let’s execute this backlog and schedule a threat model session next.
+
